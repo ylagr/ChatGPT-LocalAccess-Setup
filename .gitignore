@@ -1,0 +1,14 @@
+# Runtime connection secrets
+CURRENT_CONNECTION.txt
+
+# Runtime logs
+*.log
+
+# Machine-specific workspace selection
+workspace.txt
+
+# Common editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

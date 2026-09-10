@@ -1,107 +1,115 @@
 param(
-    [string]$Workspace = "",
-    [switch]$SkipRemoteDesktopCommander
+    [switch]$SkipRemoteDesktopCommander,
+    [switch]$NoLaunch
 )
-
 $ErrorActionPreference = "Stop"
 $Host.UI.RawUI.WindowTitle = "ChatGPT Local Access Setup"
+$root = $PSScriptRoot
 
 function Step($text) { Write-Host "`n==> $text" -ForegroundColor Cyan }
-function Has-Command($name) { return [bool](Get-Command $name -ErrorAction SilentlyContinue) }
+function Has-Command($name) { [bool](Get-Command $name -ErrorAction SilentlyContinue) }
 function Refresh-Path {
     $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
                 [Environment]::GetEnvironmentVariable("Path","User")
 }
 function Ensure-Winget {
     if (-not (Has-Command "winget")) {
-        throw "winget is required. Install/update Microsoft App Installer first."
+        throw "winget is required. Install Microsoft App Installer first."
     }
+}
+
+function Install-WingetPackage([string]$id, [string]$label) {
+    Ensure-Winget
+    Write-Host "Installing/updating $label..."
+    & winget install -e --id $id --accept-source-agreements --accept-package-agreements
+    if ($LASTEXITCODE -ne 0) { throw "$label installation failed (winget exit $LASTEXITCODE)." }
+    Refresh-Path
+}
+
+function Get-CompatiblePython {
+    $python = Get-Command "python" -ErrorAction SilentlyContinue
+    if ($python) {
+        try {
+            $ok = (& $python.Source -c "import sys; print('1' if sys.version_info >= (3,11) else '0')").Trim()
+            if ($ok -eq "1") { return [pscustomobject]@{ Executable = $python.Source; Prefix = @() } }
+        } catch {}
+    }
+
+    $launcher = Get-Command "py" -ErrorAction SilentlyContinue
+    if ($launcher) {
+        try {
+            $ok = (& $launcher.Source -3.11 -c "import sys; print('1' if sys.version_info >= (3,11) else '0')").Trim()
+            if ($ok -eq "1") { return [pscustomobject]@{ Executable = $launcher.Source; Prefix = @("-3.11") } }
+        } catch {}
+    }
+    return $null
+}
+
+function Invoke-Python($pythonInfo, [string[]]$arguments) {
+    $allArguments = @($pythonInfo.Prefix) + $arguments
+    & $pythonInfo.Executable @allArguments
+    if ($LASTEXITCODE -ne 0) { throw "Python command failed (exit $LASTEXITCODE)." }
+}
+
+function Get-NodeMajor {
+    if (-not (Has-Command "node")) { return 0 }
+    try { return [int]((& node -p "process.versions.node.split('.')[0]").Trim()) } catch { return 0 }
 }
 
 Write-Host "ChatGPT Local Access - One-click Setup" -ForegroundColor Green
-Write-Host "Installs prerequisites for coding-tools MCP, Cloudflare Tunnel, and Desktop Commander."
+Write-Host "Official GUI based setup: Coding Tools MCP Desktop + Cloudflare Tunnel."
+
+$desktop = [Environment]::GetFolderPath("Desktop")
+$defaultWorkspace = Join-Path $desktop "CodingTool"
+New-Item -ItemType Directory -Path $defaultWorkspace -Force | Out-Null
+Write-Host "Default workspace: $defaultWorkspace"
 
 Step "Checking Python 3.11+"
-if (-not (Has-Command "python")) {
-    Ensure-Winget
-    winget install -e --id Python.Python.3.11 --accept-source-agreements --accept-package-agreements
-    Refresh-Path
+$pythonInfo = Get-CompatiblePython
+if (-not $pythonInfo) {
+    Install-WingetPackage "Python.Python.3.11" "Python 3.11"
+    $pythonInfo = Get-CompatiblePython
 }
-$pyVersion = & python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
-$pyOk = & python -c "import sys; print(1 if sys.version_info >= (3,11) else 0)"
-if ($pyOk -ne "1") { throw "Python 3.11 or newer is required." }
-Write-Host "Python: $pyVersion"
+if (-not $pythonInfo) { throw "Python 3.11 or newer was installed but could not be resolved. Reopen the installer after Windows refreshes PATH." }
+$pythonVersionArgs = @($pythonInfo.Prefix) + @("--version")
+Write-Host "Python: $(& $pythonInfo.Executable @pythonVersionArgs)"
 
-Step "Checking uv / uvx"
-if (-not (Has-Command "uvx")) {
-    Ensure-Winget
-    winget install -e --id astral-sh.uv --accept-source-agreements --accept-package-agreements
-    Refresh-Path
-}
-if (-not (Has-Command "uvx")) { throw "uvx is unavailable. Reopen PowerShell and rerun Install.ps1." }
-Write-Host "uvx: $((Get-Command uvx).Source)"
+Step "Installing Coding Tools MCP Desktop"
+Invoke-Python $pythonInfo @("-m", "pip", "install", "--upgrade", "coding-tools-mcp[desktop]")
+Refresh-Path
 
-Step "Checking coding-tools-mcp"
-& uvx coding-tools-mcp --help *> $null
-if ($LASTEXITCODE -ne 0) { throw "coding-tools-mcp could not start." }
-Write-Host "coding-tools-mcp: ready"
+$scriptsArgs = @($pythonInfo.Prefix) + @("-c", "import sysconfig; print(sysconfig.get_path('scripts'))")
+$scriptsDir = (& $pythonInfo.Executable @scriptsArgs).Trim()
+$desktopExe = Join-Path $scriptsDir "coding-tools-mcp-desktop.exe"
+if (-not (Test-Path $desktopExe)) { throw "Desktop launcher not found: $desktopExe" }
+Write-Host "Coding Tools MCP Desktop: $desktopExe"
 
-Step "Checking cloudflared"
+Step "Checking Cloudflare Tunnel CLI"
 if (-not (Has-Command "cloudflared")) {
-    Write-Host "Downloading official Windows x64 MSI from Cloudflare GitHub Releases..."
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/cloudflare/cloudflared/releases/latest" -Headers @{"User-Agent"="ChatGPT-LocalAccess-Setup"}
-    $asset = $release.assets | Where-Object { $_.name -eq "cloudflared-windows-amd64.msi" } | Select-Object -First 1
-    if (-not $asset) { throw "Official cloudflared Windows x64 MSI was not found in the latest release." }
-    $msi = Join-Path $env:TEMP "cloudflared-windows-amd64.msi"
-    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $msi
-    $msiArgs = "/i `"$msi`" /qn /norestart"
-    $msiProc = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru
-    if ($msiProc.ExitCode -ne 0) { throw "cloudflared MSI install failed with exit code $($msiProc.ExitCode)." }
-    Remove-Item $msi -Force -ErrorAction SilentlyContinue
-    Refresh-Path
+    Install-WingetPackage "Cloudflare.cloudflared" "cloudflared"
 }
-if (-not (Has-Command "cloudflared")) { throw "cloudflared is still unavailable after MSI installation." }
-Write-Host "cloudflared: $(& cloudflared --version)"
-
-Step "Checking Node.js 18+ for Remote Desktop Commander"
-if (-not (Has-Command "node")) {
-    Ensure-Winget
-    winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
-    Refresh-Path
-}
-if (-not (Has-Command "node")) { throw "Node.js is unavailable. Reopen PowerShell and rerun Install.ps1." }
-$nodeMajor = [int]((& node -p "process.versions.node.split('.')[0]").Trim())
-if ($nodeMajor -lt 18) { throw "Node.js 18 or newer is required." }
-Write-Host "Node: $(& node --version)"
+if (-not (Has-Command "cloudflared")) { throw "cloudflared is still unavailable after installation." }
+Write-Host "cloudflared: $(& cloudflared --version | Select-Object -First 1)"
 
 if (-not $SkipRemoteDesktopCommander) {
-    Step "Remote Desktop Commander"
-    Write-Host "After this installer finishes, run Start-Remote-Desktop-Commander.ps1 (or the 04 launcher CMD)."
-    Write-Host "On first run, complete browser/device authorization with the SAME account used on your other PCs."
-    Write-Host "One Remote Desktop Commander plugin can manage multiple registered computers by deviceId."
-}
-Step "Preparing workspace"
-if (-not $Workspace) {
-    $desktopPath = [Environment]::GetFolderPath("Desktop")
-    $Workspace = Join-Path $desktopPath "CodingTool"
-    if (-not (Test-Path $Workspace -PathType Container)) {
-        New-Item -ItemType Directory -Path $Workspace -Force | Out-Null
-        Write-Host "Created default workspace: $Workspace"
-    } else {
-        Write-Host "Default workspace already exists: $Workspace"
+    Step "Checking Node.js for Remote Desktop Commander"
+    if ((Get-NodeMajor) -lt 18) {
+        Install-WingetPackage "OpenJS.NodeJS.LTS" "Node.js LTS"
     }
-} else {
-    $Workspace = [IO.Path]::GetFullPath($Workspace)
-    if (-not (Test-Path $Workspace -PathType Container)) {
-        throw "Workspace does not exist: $Workspace"
-    }
+    $nodeMajor = Get-NodeMajor
+    if ($nodeMajor -lt 18) { throw "Node.js 18+ is required for Remote Desktop Commander." }
+    Write-Host "Node: $(& node --version)"
 }
 
-Set-Content -Path (Join-Path $PSScriptRoot "workspace.txt") -Value $Workspace -Encoding UTF8
-Write-Host "Saved workspace: $Workspace"
+Step "Verifying installation"
+& (Join-Path $root "Verify.ps1") -NoPause -SkipRemoteDesktopCommander:$SkipRemoteDesktopCommander
+if ($LASTEXITCODE -ne 0) { throw "Verification reported a failure." }
 
-Write-Host "`nLocal installation is complete." -ForegroundColor Green
-Write-Host "Default coding workspace: $Workspace"
-Write-Host "Next: run Start-Web-MCP.ps1 to start coding-tools + a temporary Cloudflare HTTPS tunnel."
-Write-Host "Then add the copied /mcp URL in ChatGPT Developer Mode."
-Read-Host "Press Enter to close"
+Write-Host "`nInstallation complete." -ForegroundColor Green
+Write-Host "The retired extra :8000 MCP launcher is not used anymore." -ForegroundColor Cyan
+Write-Host "The official GUI owns the MCP runtime, OAuth and Cloudflare Quick/Fixed tunnel lifecycle."
+
+if (-not $NoLaunch) {
+    Step "Opening official Coding Tools MCP Desktop GUI"
+    & (Join-Path $root "Start-CodingTools-Desktop.ps1") -NoPause
+}

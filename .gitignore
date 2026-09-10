@@ -1,11 +1,11 @@
-# Runtime connection secrets
-CURRENT_CONNECTION.txt
-
-# Runtime logs
+# Runtime logs / legacy files from pre-GUI versions
 *.log
-
-# Machine-specific workspace selection
+CURRENT_CONNECTION.txt
 workspace.txt
+
+# Local usage records live under %LOCALAPPDATA%, never in the repository.
+usage-*.jsonl
+usage-*.csv
 
 # Common editor / OS noise
 .vscode/

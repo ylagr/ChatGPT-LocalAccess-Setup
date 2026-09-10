@@ -226,3 +226,10 @@ ChatGPT Web 当前没有通过 MCP 请求把该对话的 `input_tokens / output_
 - `trusted` 仍然不等于可以跨 Workspace 随意读写；Workspace 文件边界应该保留。
 - Cloudflare Token、OAuth Password 等不要写进 Git 仓库或公开分享。
 - 使用记录默认只放 `%LOCALAPPDATA%`，不会提交到项目 Git。
+
+## 12. 教程与相关项目
+
+- 教程地址：<https://www.bilibili.com/video/BV1H38y6BEk3/>
+- Coding MCP：<https://github.com/xyTom/coding-tools-mcp/tree/main>
+- Cloudflare Tunnel：<https://github.com/cloudflare/cloudflared/releases>
+- Remote Desktop Commander：进入 ChatGPT 网页端的插件 / Apps 搜索 **Remote Desktop Commander** 并安装。
